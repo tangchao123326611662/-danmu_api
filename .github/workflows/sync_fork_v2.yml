@@ -1,0 +1,56 @@
+name: Fork Sync v2
+
+permissions:
+  contents: write
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync_with_upstream:
+    name: Sync with Upstream
+    if: ${{ github.event.repository.fork }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Sync fork through GitHub API
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          response_file="$(mktemp)"
+          status="$(curl --silent --show-error --location \
+            --output "$response_file" \
+            --write-out '%{http_code}' \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPOSITORY}/merge-upstream" \
+            --data '{"branch":"main"}')"
+
+          echo "GitHub API status: ${status}"
+          cat "$response_file"
+
+          case "$status" in
+            200)
+              merge_type="$(jq -r '.merge_type // empty' "$response_file")"
+              message="$(jq -r '.message // empty' "$response_file")"
+              test -n "$merge_type"
+              echo "Sync completed: ${merge_type} — ${message}"
+              ;;
+            204)
+              echo "Sync completed: fork is already up to date"
+              ;;
+            409)
+              echo "::error::Sync stopped because GitHub reported a merge conflict"
+              exit 1
+              ;;
+            *)
+              echo "::error::GitHub sync API returned HTTP ${status}"
+              exit 1
+              ;;
+          esac
